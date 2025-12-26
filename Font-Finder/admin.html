@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Font Admin Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-8">
+
+    <div class="max-w-2xl mx-auto bg-white p-8 rounded-xl shadow-lg">
+        <h1 class="text-2xl font-bold mb-6 text-gray-800">Admin: Quick Upload</h1>
+        
+        <!-- Step 1: Authentication -->
+        <div id="authSection" class="mb-8 p-4 bg-blue-50 rounded-lg border border-blue-100">
+            <label class="block text-sm font-medium text-gray-700 mb-2">GitHub Personal Access Token</label>
+            <input type="password" id="githubToken" placeholder="ghp_xxxxxxxxxxxx" class="w-full p-2 border rounded mb-2">
+            <p class="text-xs text-gray-500 mb-2">This token needs 'repo' scope. It is not saved on the server.</p>
+        </div>
+
+        <!-- Step 2: File Upload Only -->
+        <div class="space-y-4">
+            <div class="p-6 border-2 border-dashed border-gray-300 rounded-lg bg-gray-50 text-center">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Select Font File (.ttf, .otf, .woff)</label>
+                <input type="file" id="fontFile" accept=".ttf,.otf,.woff,.woff2" class="w-full p-2">
+                <p class="text-xs text-gray-500 mt-2">
+                    Name will be auto-detected from filename.<br>
+                    Author will be "NAFICH".
+                </p>
+            </div>
+            
+            <button onclick="handleUpload()" id="uploadBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg transition-colors">
+                One-Click Upload
+            </button>
+        </div>
+
+        <!-- Logs -->
+        <div id="statusLog" class="mt-6 p-4 bg-gray-900 text-green-400 font-mono text-xs rounded h-40 overflow-y-auto hidden"></div>
+    </div>
+
+    <script>
+        // CONFIGURATION UPDATED
+        const GITHUB_USERNAME = 'Nafich-Shikdar';
+        const GITHUB_REPO = 'DaVinci'; // New Repo Name
+        const BASE_PATH = 'Font-Finder'; // Sub-folder
+        const GITHUB_BRANCH = 'main';
+
+        const logDiv = document.getElementById('statusLog');
+        const uploadBtn = document.getElementById('uploadBtn');
+
+        function log(msg) {
+            logDiv.classList.remove('hidden');
+            logDiv.innerHTML += `> ${msg}<br>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        async function handleUpload() {
+            const token = document.getElementById('githubToken').value;
+            const fileInput = document.getElementById('fontFile');
+
+            if (!token || !fileInput.files[0]) {
+                alert('Please provide a GitHub token and select a file.');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const fileName = file.name;
+            
+            // Auto-detect Font Name
+            const fontName = fileName.replace(/\.[^/.]+$/, "");
+            const authorName = "NAFICH";
+            const category = "Regular"; 
+
+            uploadBtn.disabled = true;
+            uploadBtn.innerText = "Processing...";
+            log('Starting process...');
+            log(`Detected Name: ${fontName}`);
+
+            try {
+                // 1. Convert File to Base64
+                const base64Content = await toBase64(file);
+                const cleanBase64 = base64Content.split(',')[1];
+
+                // 2. Upload Font File to 'Font-Finder/fonts/' folder
+                const uploadPath = `${BASE_PATH}/fonts/${fileName}`;
+                log(`Uploading to: ${uploadPath}...`);
+                await uploadToGithub(token, uploadPath, cleanBase64, `Add font: ${fontName}`);
+                log('Font file uploaded successfully.');
+
+                // 3. Update fonts.json in 'Font-Finder/'
+                const jsonPath = `${BASE_PATH}/fonts.json`;
+                log(`Fetching ${jsonPath}...`);
+                const jsonFileUrl = `https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/contents/${jsonPath}`;
+                
+                const getResponse = await fetch(jsonFileUrl, {
+                    headers: { 
+                        'Authorization': `token ${token}`,
+                        'Accept': 'application/vnd.github.v3+json'
+                    }
+                });
+
+                let currentFonts = [];
+                let sha = null;
+
+                if (getResponse.ok) {
+                    const data = await getResponse.json();
+                    sha = data.sha;
+                    // Decode existing content
+                    const decodedContent = atob(data.content);
+                    currentFonts = JSON.parse(decodedContent);
+                } else {
+                    log('fonts.json not found, creating new one.');
+                }
+
+                // Add new font to list
+                const newEntry = {
+                    id: Date.now().toString(),
+                    name: fontName,
+                    filename: fileName,
+                    author: authorName,
+                    category: category
+                };
+
+                currentFonts.push(newEntry);
+
+                // 4. Save updated fonts.json
+                log('Updating fonts.json list...');
+                const newJsonContent = btoa(JSON.stringify(currentFonts, null, 2));
+                
+                await fetch(jsonFileUrl, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `token ${token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: `Update fonts list with ${fontName}`,
+                        content: newJsonContent,
+                        sha: sha,
+                        branch: GITHUB_BRANCH
+                    })
+                });
+
+                log('SUCCESS! Font added and list updated.');
+                alert('Upload Successful!');
+                location.reload();
+
+            } catch (error) {
+                console.error(error);
+                log(`ERROR: ${error.message}`);
+                alert('Error occurred. Check console/logs.');
+            } finally {
+                uploadBtn.disabled = false;
+                uploadBtn.innerText = "One-Click Upload";
+            }
+        }
+
+        // Helper to convert file to base64
+        const toBase64 = file => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = error => reject(error);
+        });
+
+        // Helper to upload file to GitHub
+        async function uploadToGithub(token, path, content, message) {
+            const url = `https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/contents/${path}`;
+            
+            // Check if file exists to get SHA (for overwrite)
+            let sha = null;
+            try {
+                const check = await fetch(url, { headers: { 'Authorization': `token ${token}` }});
+                if (check.ok) {
+                    const data = await check.json();
+                    sha = data.sha;
+                }
+            } catch(e) {}
+
+            const body = {
+                message: message,
+                content: content,
+                branch: GITHUB_BRANCH
+            };
+            if (sha) body.sha = sha;
+
+            const response = await fetch(url, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(body)
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.message);
+            }
+        }
+    </script>
+</body>
+</html>
